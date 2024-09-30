@@ -1,97 +1,115 @@
-import requests
-from bs4 import BeautifulSoup
-import re
-import pandas as pd
-import pickle
 import time
+import random
+import pandas as pd
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import Select
+from selenium.webdriver.common.action_chains import ActionChains
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 
-# Search for a paper by title on Google Scholar
-def search_scholar(title):
-    search_url = "https://scholar.google.com/scholar"
-    params = {"q": title}
-    headers = {"User-Agent": "Mozilla/5.0"}
+from webdriver_manager.chrome import ChromeDriverManager
+import time
+import undetected_chromedriver as uc
+import ssl
 
-    response = requests.get(search_url, params=params, headers=headers)
-    if response.status_code == 200:
-        return response.text
-    else:
-        print(f"Error: {response.status_code}")
-        return None
+# Ignore SSL certificate verification (for testing only)
+ssl._create_default_https_context = ssl._create_unverified_context
+# Initialize the WebDriver (using Chrome in this case)
+# Make sure to replace 'chromedriver_path' with the actual path of your chromedriver
+driver = uc.Chrome()
 
-# Parse search results and get citation link
-def parse_results_for_citation_link(html_content):
-    soup = BeautifulSoup(html_content, "html.parser")
-    citation_link = None
-
-    # Parse the search results
-    for entry in soup.select(".gs_r.gs_or.gs_scl"):
-        citation_info = entry.select_one(".gs_fl a:nth-of-type(3)")
-        if citation_info:
-            citation_link = citation_info["href"]
-            break  # Only take the first result for simplicity
+# Function to search a paper on Google Scholar
+def search_google_scholar(paper_title):
+    # Open Google Scholar
+    driver.get("https://scholar.google.com/")
+    time.sleep(random.uniform(3, 12))
     
-    return citation_link
+    # Locate the search bar, input the paper title, and search
+    search_box = driver.find_element(By.NAME, "q")
+    search_box.send_keys(paper_title)
+    search_box.send_keys(Keys.RETURN)
+    
+    # Wait for the search results to load
+    time.sleep(random.uniform(3, 12))
 
-# Scrape titles and authors of citing papers
-def scrape_citing_papers(citation_link):
-    start_num=0
-    found_cites=True
+# Function to retrieve citing papers (title and authors) and store in list of lists
+def get_citing_papers(paper_title=''):
     citing_papers = []
-    while found_cites:
 
-        base_url = "https://scholar.google.com"
-        full_citation_url = base_url + citation_link + '&start=' + str(start_num)
-        headers = {"User-Agent": "Mozilla/5.0"}
-        time.sleep(1.5)
-        response = requests.get(full_citation_url, headers=headers)
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.text, "html.parser")
-            
-            if len(soup.select(".gs_r.gs_or.gs_scl")) < 1:
-                return citing_papers
-            # Parse the titles and authors of citing papers
-            for entry in soup.select(".gs_r.gs_or.gs_scl"):
-                title_element = entry.select_one(".gs_rt a")
-                author_element = entry.select_one(".gs_a")
+    # Find the "Cited by" link for the first search result
+    try:
+        cited_by_link = driver.find_element(By.PARTIAL_LINK_TEXT, "Cited by")
+        cited_by_link.click()
+        time.sleep(random.uniform(3, 12))
+    except Exception as e:
+        print(f"Error: {e}")
+        return citing_papers
+    
+    # Now we are on the page listing all citing papers
+    # Extract titles and authors from the results
+    while True:
+        # Get all the result elements on the page
+        results = driver.find_elements(By.CLASS_NAME, "gs_ri")
 
-                if title_element and author_element:
-                    paper_title = title_element.text
-                    paper_authors = author_element.text.split(' - ')[0]  # Extract authors from the author-info string
-                    citing_papers.append({
-                        "title": paper_title,
-                        "authors": paper_authors.split('\xa0')[0]
-                    })
-        start_num +=10
+        for result in results:
+            try:
+                # Extract the title
+                title = result.find_element(By.TAG_NAME, "h3").text
+                
+                # Extract the authors
+                authors = result.find_element(By.CLASS_NAME, "gs_a").text
+
+                # Append to the list of lists
+                citing_papers.append([paper_title, title, authors])
+            except Exception as e:
+                print(f"Error parsing result: {e}")
+        
+        # Check if there's a 'Next' button to go to the next page of results
+        try:
+            next_button = driver.find_element(By.LINK_TEXT, "Next")
+            next_button.click()
+            time.sleep(random.uniform(3, 12))
+        except:
+            # No more pages
+            break
+    
     return citing_papers
 
+# Function to perform the search and extraction for multiple paper titles
+def search_and_extract_citing_papers(paper_titles):
+    all_citing_papers = []
 
-def run_main():
-    pub_data = pd.read_csv('Business_Faculty_Data.csv')
-    titles = list(pub_data['Article'])
-    cite_lst = []
-    for paper_title in titles:
-        #paper_title = "Base-stock policies are close to optimal for newsvendor networks"
-        html_content = search_scholar(paper_title)
+    # Loop through each paper title in the list
+    for paper_title in paper_titles:
+        time.sleep(300)
+        # Search for the paper on Google Scholar
+        print(f"Searching for: {paper_title}")
+        search_google_scholar(paper_title)
+        
+        # Get the citing papers for the current paper
+        citing_papers_list = get_citing_papers(paper_title)
+        
+        # Append results to the overall list
+        all_citing_papers.extend(citing_papers_list)
+    
+    # Convert the list of lists to a pandas DataFrame
+    citing_papers_df = pd.DataFrame(all_citing_papers, columns=["Paper Title", "Citing Title", "Authors"])
 
-        if html_content:
-            citation_link = parse_results_for_citation_link(html_content)
-            
-            if citation_link:
-                citing_papers = scrape_citing_papers(citation_link)
-                
-                print(f"Papers citing '{paper_title}':")
-                for i, paper in enumerate(citing_papers, 1):
-                    print(f"{i}. Title: {paper['title']}")
-                    print(f"   Authors: {paper['authors']}")
-                    print("-" * 80)
-                    cite_lst.append([paper_title, paper['title'], paper['authors']] )
-                    with open("cite_lst", "wb") as fp:   #Pickling
-                        pickle.dump(cite_lst, fp)
-            else:
-                print("No citation link found.")
-        else:
-            print("No search results found.")
-    cite_df = pd.DataFrame(cite_lst, columns=['Paper Cited', 'Citing Paper ', 'Authors'])
-    cite_df.to_csv('')
-if __name__ == '__main__':
-    run_main()
+    return citing_papers_df
+
+# Example usage
+pub_data = pd.read_csv('Business_Faculty_Data.csv')
+paper_titles = list(pub_data['Article'])
+
+# Call the function to search and extract citing papers for all the paper titles
+citing_papers_df = search_and_extract_citing_papers(paper_titles)
+
+# Print the DataFrame
+print(citing_papers_df)
+
+# Close the browser once done
+driver.quit()
